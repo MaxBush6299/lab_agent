@@ -52,14 +52,6 @@ MCP_SERVER_LABEL=microsoft.docs.mcp
 python main.py
 ```
 
-### Creating a Playground-Optimized Agent
-
-```bash
-python playground_agent.py
-```
-
-This creates an agent optimized for use in the Azure AI Foundry playground with proper MCP tool integration.
-
 ## MCP Tools Available
 
 The application provides access to these Microsoft Learn MCP tools:
@@ -72,7 +64,7 @@ The application provides access to these Microsoft Learn MCP tools:
 
 - **Preview Packages Required**: MCP functionality is only available in preview versions of Azure AI packages
 - **System Prompt Matters**: Explicit instructions help the AI use MCP tools effectively
-- **Playground Compatibility**: The enhanced system prompt improves compatibility with Azure AI Foundry playground
+
 
 ## Troubleshooting
 
@@ -85,8 +77,6 @@ pip install --pre --upgrade azure-ai-agents azure-ai-projects
 ## Files
 
 - `main.py`: Main application with full MCP workflow including approval handling
-- `playground_agent.py`: Simplified agent creation optimized for playground use
-- `simple_agent.py`: Basic agent without MCP for testing connectivity
 
 ## Contributing
 
