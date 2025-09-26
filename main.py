@@ -15,9 +15,14 @@ from azure.ai.agents.models import (
 
 load_dotenv()
 
+######################################################
+#MCP Tool Setup
+#######################################################
+
+
 # Get MCP server configuration from environment variables
-mcp_server_url = os.environ.get("MCP_SERVER_URL", "https://gitmcp.io/Azure/azure-rest-api-specs")
-mcp_server_label = os.environ.get("MCP_SERVER_LABEL", "github")
+mcp_server_url = os.environ.get("MCP_SERVER_URL")
+mcp_server_label = os.environ.get("MCP_SERVER_LABEL")
 
 project_client = AIProjectClient(
     endpoint=os.environ["PROJECT_ENDPOINT"],
@@ -40,6 +45,11 @@ mcp_tool.allow_tool(microsoft_docs_search)
 print(f"Allowed tools: {mcp_tool.allowed_tools}")
 mcp_tool.allow_tool(microsoft_code_sample_search)
 print(f"Allowed tools: {mcp_tool.allowed_tools}")
+
+
+######################################################
+#Project Client Setup
+#######################################################
 
 # Create an AIProjectClient from an endpoint, copied from your Azure AI Foundry project.
 # You need to login to Azure subscription via Azure CLI and set the environment variables
