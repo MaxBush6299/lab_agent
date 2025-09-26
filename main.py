@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
-from azure.ai.agents.models import CodeInterpreterTool
+from azure.ai.agents.models import CodeInterpreterTool, BingGroundingTool
 from dotenv import load_dotenv
 from azure.ai.agents.models import (
     ListSortOrder,
@@ -21,11 +21,12 @@ load_dotenv()
 #Configuration
 #######################################################
 
-MODEL = os.getenv("AZURE_AI_MODEL", "gpt-4o")
+MODEL = os.getenv("MODEL_DEPLOYMENT_NAME", "gpt-4o")
 
 # Get MCP server configuration from environment variables
 MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL")
 MCP_SERVER_LABEL = os.environ.get("MCP_SERVER_LABEL")
+BING_CONNECTION_ID = os.environ.get("BING_CONNECTION_ID")
 
 CONN_STR = os.environ["PROJECT_ENDPOINT"]  
 
@@ -111,7 +112,7 @@ def drive_until_complete(project_client: AIProjectClient, thread, run, mcp_tool:
                     )
             if approvals:
                 pretty(f"[submit approvals] count={len(approvals)}")
-                project_client.agents.runs.submit_tool_approvals(
+                project_client.agents.runs.submit_tool_outputs(
                     thread_id=thread.id,
                     run_id=run.id,
                     tool_approvals=approvals,
@@ -168,21 +169,31 @@ def main():
         server_url=MCP_SERVER_URL ,
     )
 
-    # Allow exactly the tools you expect from that MCP server-
+    # Allow exactly the tools you expect from that MCP server
     mcp_tool.allow_tool("microsoft_docs_search")
     mcp_tool.allow_tool("microsoft_docs_fetch")
     mcp_tool.allow_tool("microsoft_code_sample_search")
 
+    # Create Code Interpreter and Bing Grounding tools
+    code_interpreter = CodeInterpreterTool()
+    bing_grounding = BingGroundingTool(connection_id=BING_CONNECTION_ID)
     
-    # Create the agent
+    # Combine all tools
+    all_tools = [code_interpreter.definitions[0]] + [bing_grounding.definitions[0]] + mcp_tool.definitions
+    
+    # Create the agent with enhanced instructions
     agent = project_client.agents.create_agent(
         model=MODEL,
-        name="MCP Playground Agent",
+        name="Enhanced MCP Agent",
         instructions=(
-            "You are a helpful assistant. When you need to consult Microsoft Learn, "
-            "use the MCP tools that have been approved."
+            "You are a helpful assistant with multiple capabilities:\n"
+            "- Use Code Interpreter for Python code execution, data analysis, and calculations\n"
+            "- Use Bing Search for real-time web information and current events\n"
+            "- Use Microsoft Learn MCP tools for official Microsoft documentation\n\n"
+            "When users ask about Microsoft technologies, prioritize using the MCP tools. "
+            "For coding tasks, use the Code Interpreter. For current events or general web info, use Bing Search."
         ),
-        tools=mcp_tool.definitions,
+        tools=all_tools,
     )
     pretty(f"[agent] id={agent.id} model={agent.model}")
 
@@ -191,7 +202,7 @@ def main():
     pretty(f"[thread] id={thread.id}")
 
     # IMPORTANT: Add ONE user message. Do NOT inject tool/assistant messages yourself.
-    user_prompt = "What is Azure AI Foundry? Feel free to search Microsoft Learn."
+    user_prompt = "What is Azure AI Foundry? Please search Microsoft Learn for official documentation. Also, can you calculate the square root of 144 using code?"
     project_client.agents.messages.create(
         thread_id=thread.id,
         role="user",
@@ -213,9 +224,13 @@ def main():
     )
 
     pretty("\n================ Conversation ================\n")
-    for m in msgs.data:
+    for m in msgs:
         role = getattr(m, "role", "?")
-        content = getattr(m, "content", "")
+        # Handle different content formats
+        if hasattr(m, 'text_messages') and m.text_messages:
+            content = m.text_messages[-1].text.value if m.text_messages[-1].text else ""
+        else:
+            content = getattr(m, "content", "")
         pretty(f"{role.upper()}: {content}\n")
     pretty("=============================================\n")
 
