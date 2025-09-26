@@ -1,5 +1,6 @@
 import os, time
 from pathlib import Path
+from typing import Optional, Dict, Any
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential
 from azure.ai.agents.models import CodeInterpreterTool
@@ -9,6 +10,7 @@ from azure.ai.agents.models import (
     McpTool,
     RequiredMcpToolCall,
     RunStepActivityDetails,
+    SubmitToolOutputsAction,
     SubmitToolApprovalAction,
     ToolApproval,
 )
@@ -16,189 +18,210 @@ from azure.ai.agents.models import (
 load_dotenv()
 
 ######################################################
-#MCP Tool Setup
+#Configuration
 #######################################################
 
+MODEL = os.getenv("AZURE_AI_MODEL", "gpt-4o")
 
 # Get MCP server configuration from environment variables
-mcp_server_url = os.environ.get("MCP_SERVER_URL")
-mcp_server_label = os.environ.get("MCP_SERVER_LABEL")
+MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL")
+MCP_SERVER_LABEL = os.environ.get("MCP_SERVER_LABEL")
 
-project_client = AIProjectClient(
-    endpoint=os.environ["PROJECT_ENDPOINT"],
-    credential=DefaultAzureCredential(),
-)
-# Initialize agent MCP tool
-mcp_tool = McpTool(
-    server_label=mcp_server_label,
-    server_url=mcp_server_url,
-    allowed_tools=[],  # Optional: specify allowed tools
-)
+CONN_STR = os.environ["PROJECT_ENDPOINT"]  
 
-# You can also add or remove allowed tools dynamically
-microsoft_docs_search="microsoft_docs_search"
-microsoft_docs_fetch="microsoft_docs_fetch"
-microsoft_code_sample_search="microsoft_code_sample_search"
-mcp_tool.allow_tool(microsoft_docs_fetch)
-print(f"Allowed tools: {mcp_tool.allowed_tools}")
-mcp_tool.allow_tool(microsoft_docs_search)
-print(f"Allowed tools: {mcp_tool.allowed_tools}")
-mcp_tool.allow_tool(microsoft_code_sample_search)
-print(f"Allowed tools: {mcp_tool.allowed_tools}")
+# --------------------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------------------
+
+def pretty(msg: str):
+    """Tiny logger to keep stdout readable."""
+    print(msg, flush=True)
 
 
-######################################################
-#Project Client Setup
-#######################################################
+def execute_mcp_tool(
+    *,
+    server_label: str,
+    tool_name: str,
+    args: Dict[str, Any],
+    headers: Optional[Dict[str, str]] = None,
+) -> Any:
+    """
+    Replace this stub with a real call to your MCP server IF your flow requires you
+    to *manually* execute the tool and return its output.
 
-# Create an AIProjectClient from an endpoint, copied from your Azure AI Foundry project.
-# You need to login to Azure subscription via Azure CLI and set the environment variables
-project_endpoint = os.environ["PROJECT_ENDPOINT"]  # Ensure the PROJECT_ENDPOINT environment variable is set
+    Some setups only need approvals, and the runtime will do the execution.
+    In others, you'll receive SubmitToolOutputsAction and must return outputs yourself.
 
-# Create an AIProjectClient instance
-project_client = AIProjectClient(
-    endpoint=project_endpoint,
-    credential=DefaultAzureCredential(),  # Use Azure Default Credential for authentication
-)
+    IMPORTANT:
+    - Return a JSON-serializable value (str or dict).
+    - Keep it small; summarize large blobs.
 
-code_interpreter = CodeInterpreterTool()
-with project_client:
-    # Create an agent with the Code Interpreter tool and MCP tool
-    agent = project_client.agents.create_agent(
-        model=os.environ["MODEL_DEPLOYMENT_NAME"],  # Model deployment name
-        name="my-agent",  # Name of the agent
-        instructions="""You are a helpful coding assistant that can also assist with general questions.
+    For smoke testing, we echo back the inputs.
+    """
+    # TODO: implement a real call to your MCP server if required by your setup
+    # Example shape (pseudo):
+    # result = mcp_client.invoke(server_label=server_label, tool=tool_name, arguments=args, headers=headers)
+    # return result
+    return {
+        "status": "ok",
+        "server_label": server_label,
+        "tool": tool_name,
+        "echo_args": args,
+    }
 
-## Querying Microsoft Documentation
 
-You have access to MCP tools called `microsoft_docs_search`, `microsoft_docs_fetch`, and `microsoft_code_sample_search` - these tools allow you to search through and fetch Microsoft's latest official documentation and code samples, and that information might be more detailed or newer than what's in your training data set.
+def drive_until_complete(project_client: AIProjectClient, thread, run, mcp_tool: McpTool, poll_interval: float = 0.7):
+    """
+    Poll the run and satisfy required actions until it reaches a terminal state.
+    Handles:
+    - SubmitToolApprovalAction   -> submit_tool_approvals(...)
+    - SubmitToolOutputsAction    -> execute tool + submit_tool_outputs(...)
+    """
+    def _log_required_action(ra):
+        try:
+            if isinstance(ra, SubmitToolApprovalAction):
+                for c in ra.submit_tool_approval.tool_calls or []:
+                    pretty(f"[RA-approve] id={c.id} server={getattr(c,'server_label',None)} tool={getattr(c,'name',None)}")
+            elif isinstance(ra, SubmitToolOutputsAction):
+                for c in ra.submit_tool_outputs.tool_calls or []:
+                    pretty(f"[RA-output ] id={c.id} server={getattr(c,'server_label',None)} tool={getattr(c,'name',None)} args={getattr(c,'arguments',None)}")
+        except Exception as e:
+            pretty(f"[RA-log-error] {e!r}")
 
-When handling questions around how to work with Microsoft technologies, Azure services, C#, F#, ASP.NET Core, Microsoft.Extensions, NuGet, Entity Framework, the `dotnet` runtime, or any Microsoft-related topics - please use these tools for research purposes when dealing with specific questions.
+    while run.status in ("queued", "in_progress", "requires_action"):
+        if run.status != "requires_action":
+            time.sleep(poll_interval)
+            run = project_client.agents.runs.get(thread_id=thread.id, run_id=run.id)
+            continue
 
-Always try to use the MCP tools to provide the most current and accurate information from official Microsoft documentation. Use phrases like 'search Microsoft docs' or 'fetch full doc' to indicate when you're consulting official sources.""",  # Instructions for the agent
-        tools=[code_interpreter.definitions[0]] + mcp_tool.definitions  # Attach the tools
-    )
-    print(f"Created agent, ID: {agent.id}")
+        ra = run.required_action
+        _log_required_action(ra)
 
-    # Create a thread for communication
-    thread = project_client.agents.threads.create()
-    print(f"Created thread, ID: {thread.id}")
-
-    # Add a message to the thread
-    message = project_client.agents.messages.create(
-        thread_id=thread.id,
-        role="user",  # Role of the message sender
-        content="I would like to get the AI-102 certification. What do you recommend I study?",  # Message content
-    )
-    print(f"Created message, ID: {message['id']}")
-
-    # Create and process an agent run
-    run = project_client.agents.runs.create(
-        thread_id=thread.id,
-        agent_id=agent.id,
-        tool_resources=mcp_tool.resources,
-        additional_instructions="Please address the user as Jane Doe. The user has a premium account",
-    )
-    print(f"Created run, ID: {run.id}")
-
-    while run.status in ["queued", "in_progress", "requires_action"]:
-        time.sleep(1)
-        run = project_client.agents.runs.get(thread_id=thread.id, run_id=run.id)
-
-        if run.status == "requires_action" and isinstance(run.required_action, SubmitToolApprovalAction):
-            tool_calls = run.required_action.submit_tool_approval.tool_calls
-            if not tool_calls:
-                print("No tool calls provided - cancelling run")
-                project_client.agents.runs.cancel(thread_id=thread.id, run_id=run.id)
-                break
-
-            tool_approvals = []
-            for tool_call in tool_calls:
-                if isinstance(tool_call, RequiredMcpToolCall):
-                    try:
-                        print(f"Approving tool call: {tool_call}")
-                        tool_approvals.append(
-                            ToolApproval(
-                                tool_call_id=tool_call.id,
-                                approve=True,
-                                headers=mcp_tool.headers,
-                            )
+        # ---------- A) APPROVALS ----------
+        if isinstance(ra, SubmitToolApprovalAction):
+            approvals: list[ToolApproval] = []
+            for call in ra.submit_tool_approval.tool_calls or []:
+                if isinstance(call, RequiredMcpToolCall):
+                    approvals.append(
+                        ToolApproval(
+                            tool_call_id=call.id,
+                            approve=True,
+                            headers=getattr(mcp_tool, "headers", None) or None,
                         )
-                    except Exception as e:
-                        print(f"Error approving tool_call {tool_call.id}: {e}")
-
-            print(f"tool_approvals: {tool_approvals}")
-            if tool_approvals:
-                project_client.agents.runs.submit_tool_outputs(
-                    thread_id=thread.id, run_id=run.id, tool_approvals=tool_approvals
+                    )
+            if approvals:
+                pretty(f"[submit approvals] count={len(approvals)}")
+                project_client.agents.runs.submit_tool_approvals(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_approvals=approvals,
                 )
 
-        print(f"Current run status: {run.status}")
-
-    print(f"Run completed with status: {run.status}")
-    if run.status == "failed":
-        print(f"Run failed: {run.last_error}")
-
-    # Display run steps and tool calls
-    run_steps = project_client.agents.run_steps.list(thread_id=thread.id, run_id=run.id)
-
-    # Loop through each step
-    for step in run_steps:
-        print(f"Step {step['id']} status: {step['status']}")
-
-        # Check if there are tool calls in the step details
-        step_details = step.get("step_details", {})
-        tool_calls = step_details.get("tool_calls", [])
-
-        if tool_calls:
-            print("  MCP Tool calls:")
-            for call in tool_calls:
-                print(f"    Tool Call ID: {call.get('id')}")
-                print(f"    Type: {call.get('type')}")
-
-        if isinstance(step_details, RunStepActivityDetails):
-            for activity in step_details.activities:
-                for function_name, function_definition in activity.tools.items():
-                    print(
-                        f'  The function {function_name} with description "{function_definition.description}" will be called.:'
+        # ---------- B) TOOL OUTPUTS ----------
+        elif isinstance(ra, SubmitToolOutputsAction):
+            outputs = []
+            for call in ra.submit_tool_outputs.tool_calls or []:
+                if isinstance(call, RequiredMcpToolCall):
+                    pretty(f"[execute] {call.id} tool={call.name} server={call.server_label}")
+                    result = execute_mcp_tool(
+                        server_label=call.server_label,
+                        tool_name=call.name,
+                        args=call.arguments,
+                        headers=getattr(mcp_tool, "headers", None) or None,
                     )
-                    if len(function_definition.parameters) > 0:
-                        print("  Function parameters:")
-                        for argument, func_argument in function_definition.parameters.properties.items():
-                            print(f"      {argument}")
-                            print(f"      Type: {func_argument.type}")
-                            print(f"      Description: {func_argument.description}")
-                    else:
-                        print("This function has no parameters")
+                    outputs.append({"tool_call_id": call.id, "output": result})
 
-        print()  # add an extra newline between steps
+            if outputs:
+                pretty(f"[submit outputs] count={len(outputs)}")
+                project_client.agents.runs.submit_tool_outputs(
+                    thread_id=thread.id,
+                    run_id=run.id,
+                    tool_outputs=outputs,
+                )
 
-    # Fetch and log all messages
-    messages = project_client.agents.messages.list(thread_id=thread.id, order=ListSortOrder.ASCENDING)
-    print("\nConversation:")
-    print("-" * 50)
-    for msg in messages:
-        if msg.text_messages:
-            last_text = msg.text_messages[-1]
-            print(f"{msg.role.upper()}: {last_text.text.value}")
-            print("-" * 50)
+        # fetch next status after handling the action
+        run = project_client.agents.runs.get(thread_id=thread.id, run_id=run.id)
 
-    # Example of dynamic tool management
-    print(f"\nDemonstrating dynamic tool management:")
-    print(f"Current allowed tools: {mcp_tool.allowed_tools}")
-
-    # Remove a tool
-    try:
-        mcp_tool.disallow_tool(microsoft_docs_fetch)
-        print(f"After removing {microsoft_docs_fetch}: {mcp_tool.allowed_tools}")
-        mcp_tool.disallow_tool(microsoft_docs_search)
-        print(f"After removing {microsoft_docs_search}: {mcp_tool.allowed_tools}")
-        mcp_tool.disallow_tool(microsoft_code_sample_search)
-        print(f"After removing {microsoft_code_sample_search}: {mcp_tool.allowed_tools}")
-    except ValueError as e:
-        print(f"Error removing tool: {e}")
+    pretty(f"[run completed] status={run.status}")
+    return run
 
 
-    # Uncomment these lines to delete the agent when done
-    # project_client.agents.delete_agent(agent.id)
-    # print("Deleted agent")
+# --------------------------------------------------------------------------------------
+# Main
+# --------------------------------------------------------------------------------------
+
+def main():
+    if not CONN_STR:
+        raise RuntimeError(
+            "Please set PROJECT_ENDPOINT to your Azure AI Foundry project."
+        )
+
+    # Create the project client
+    project_client = AIProjectClient(
+        endpoint=CONN_STR,
+        credential=DefaultAzureCredential(),
+    )
+
+    # Build the MCP tool; label + URL must match the tool calls your agent will make.
+    mcp_tool = McpTool(
+        server_label=MCP_SERVER_LABEL,
+        server_url=MCP_SERVER_URL ,
+    )
+
+    # Allow exactly the tools you expect from that MCP server-
+    mcp_tool.allow_tool("microsoft_docs_search")
+    mcp_tool.allow_tool("microsoft_docs_fetch")
+    mcp_tool.allow_tool("microsoft_code_sample_search")
+
+    
+    # Create the agent
+    agent = project_client.agents.create_agent(
+        model=MODEL,
+        name="MCP Playground Agent",
+        instructions=(
+            "You are a helpful assistant. When you need to consult Microsoft Learn, "
+            "use the MCP tools that have been approved."
+        ),
+        tools=mcp_tool.definitions,
+    )
+    pretty(f"[agent] id={agent.id} model={agent.model}")
+
+    # Create a thread
+    thread = project_client.agents.threads.create()
+    pretty(f"[thread] id={thread.id}")
+
+    # IMPORTANT: Add ONE user message. Do NOT inject tool/assistant messages yourself.
+    user_prompt = "What is Azure AI Foundry? Feel free to search Microsoft Learn."
+    project_client.agents.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=user_prompt,
+    )
+    pretty("[message] role=user (added)")
+
+    # Start the run
+    run = project_client.agents.runs.create(thread_id=thread.id, agent_id=agent.id)
+    pretty(f"[run] id={run.id} status={run.status}")
+
+    # Drive the run until it completes, handling approvals/outputs
+    final_run = drive_until_complete(project_client, thread, run, mcp_tool)
+
+    # Fetch and print the full conversation
+    msgs = project_client.agents.messages.list(
+        thread_id=thread.id,
+        order=ListSortOrder.ASCENDING,
+    )
+
+    pretty("\n================ Conversation ================\n")
+    for m in msgs.data:
+        role = getattr(m, "role", "?")
+        content = getattr(m, "content", "")
+        pretty(f"{role.upper()}: {content}\n")
+    pretty("=============================================\n")
+
+    # Cleanup hint:
+    # If you're iterating frequently, you may want to delete the agent and/or thread here.
+
+
+if __name__ == "__main__":
+    main()
