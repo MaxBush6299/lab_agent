@@ -30,6 +30,9 @@ MCP_SERVER_URL = os.environ.get("MCP_SERVER_URL")
 MCP_SERVER_LABEL = os.environ.get("MCP_SERVER_LABEL")
 BING_CONNECTION_ID = os.environ.get("BING_CONNECTION_ID")
 
+# Agent reuse configuration (Microsoft best practice)
+AGENT_ID = os.environ.get("AGENT_ID")  # Optional: reuse existing agent
+
 CONN_STR = os.environ["PROJECT_ENDPOINT"]  
 
 # --------------------------------------------------------------------------------------
@@ -171,6 +174,65 @@ def try_mcp_protocol_discovery(server_url: str, timeout: int) -> List[str]:
 def pretty(msg: str):
     """Tiny logger to keep stdout readable."""
     print(msg, flush=True)
+
+
+def get_or_create_agent(
+    project_client: AIProjectClient,
+    model: str,
+    name: str,
+    instructions: str,
+    tools: List,
+    force_create: bool = False,
+):
+    """
+    Get existing agent or create a new one (Microsoft best practice).
+    
+    This follows Microsoft's recommended pattern for agent reuse:
+    - Reuse existing agent if AGENT_ID is set in environment
+    - Create new agent only when needed
+    - Agents persist by design and should be reused across runs
+    
+    Args:
+        project_client: Azure AI Project client
+        model: Model deployment name
+        name: Agent name
+        instructions: Agent instructions
+        tools: List of tools to attach to agent
+        force_create: Force creation of new agent even if AGENT_ID exists
+        
+    Returns:
+        Agent object (either existing or newly created)
+    """
+    if AGENT_ID and not force_create:
+        try:
+            # Try to reuse existing agent (Microsoft best practice)
+            pretty(f"[Agent] Attempting to reuse existing agent: {AGENT_ID}")
+            agent = project_client.agents.get_agent(AGENT_ID)
+            pretty(f"[Agent] ✅ Successfully reused agent: {agent.id}")
+            pretty(f"[Agent] Name: {agent.name}, Model: {agent.model}")
+            return agent
+        except Exception as e:
+            pretty(f"[Agent] ⚠️ Could not retrieve agent {AGENT_ID}: {str(e)}")
+            pretty(f"[Agent] Creating new agent instead...")
+    
+    # Create new agent
+    pretty(f"[Agent] Creating new agent with model: {model}")
+    agent = project_client.agents.create_agent(
+        model=model,
+        name=name,
+        instructions=instructions,
+        tools=tools,
+    )
+    pretty(f"[Agent] ✅ Created new agent: {agent.id}")
+    pretty(f"[Agent] Model: {agent.model}, Tools: {len(tools)}")
+    pretty("")
+    pretty("=" * 70)
+    pretty("💡 TIP: To reuse this agent on future runs, add to your .env file:")
+    pretty(f"   AGENT_ID={agent.id}")
+    pretty("=" * 70)
+    pretty("")
+    
+    return agent
 
 
 def execute_mcp_tool(
@@ -435,30 +497,34 @@ def main():
     if any("microsoft" in tool.lower() or "docs" in tool.lower() for tool in available_tools):
         mcp_description = "- Use Microsoft Learn MCP tools for official Microsoft documentation"
     
-    # Create the agent with enhanced instructions
-    agent = project_client.agents.create_agent(
+    # Build agent instructions
+    agent_instructions = (
+        "You are a helpful assistant with multiple capabilities:\n"
+        "- Use Code Interpreter for Python code execution, data analysis, and calculations\n"
+        "- Use Bing Search for real-time web information and current events\n"
+        f"{mcp_description}\n\n"
+        "When users ask about database operations, SQL queries, or table management, use the MSSQL MCP tools. "
+        "For coding tasks, use the Code Interpreter. For current events or general web info, use Bing Search. "
+        "Available MSSQL operations: list tables, describe tables, read data, insert data, update data, create tables, create indexes, and drop tables."
+    )
+    
+    # Get or create agent (Microsoft best practice for agent reuse)
+    agent = get_or_create_agent(
+        project_client=project_client,
         model=MODEL,
         name="Enhanced MCP Agent",
-        instructions=(
-            "You are a helpful assistant with multiple capabilities:\n"
-            "- Use Code Interpreter for Python code execution, data analysis, and calculations\n"
-            "- Use Bing Search for real-time web information and current events\n"
-            f"{mcp_description}\n\n"
-            "When users ask about database operations, SQL queries, or table management, use the MSSQL MCP tools. "
-            "For coding tasks, use the Code Interpreter. For current events or general web info, use Bing Search. "
-            "Available MSSQL operations: list tables, describe tables, read data, insert data, update data, create tables, create indexes, and drop tables."
-        ),
+        instructions=agent_instructions,
         tools=all_tools,
+        force_create=False,  # Set to True to force new agent creation
     )
-    pretty(f"[agent] id={agent.id} model={agent.model}")
-    pretty(f"[agent] Total tools available: {len(all_tools)}")
+    pretty(f"[Agent] Total tools available: {len(all_tools)}")
 
     # Create a thread
     thread = project_client.agents.threads.create()
     pretty(f"[thread] id={thread.id}")
 
     # IMPORTANT: Add ONE user message. Do NOT inject tool/assistant messages yourself.
-    user_prompt = "What are my top 3 customers?"
+    user_prompt = "What are my most popular products by sales amount? Give me the top customers that have ordered these as well as the quantity."
     project_client.agents.messages.create(
         thread_id=thread.id,
         role="user",
@@ -497,8 +563,14 @@ def main():
         pretty(f"{role.upper()}: {content}\n")
     pretty("=============================================\n")
 
-    # Cleanup hint:
-    # If you're iterating frequently, you may want to delete the agent and/or thread here.
+    # Agent cleanup (Microsoft best practice):
+    # - Agents persist by design and should be reused across runs
+    # - Only delete if you need to recreate with different configuration
+    # - To reuse this agent, add AGENT_ID={agent.id} to your .env file
+    # 
+    # Uncomment to delete agent:
+    # project_client.agents.delete_agent(agent.id)
+    # pretty(f"Deleted agent: {agent.id}")
 
 
 if __name__ == "__main__":
