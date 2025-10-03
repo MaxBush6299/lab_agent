@@ -1,0 +1,21 @@
+# Azure AI Projects and Agents with MCP support (preview versions)
+# Use the latest preview versions that include MCP functionality
+azure-ai-projects>=1.1.0b4
+azure-ai-agents>=1.2.0b4
+azure-identity>=1.15.0
+
+# HTTP requests for MCP server communication
+requests>=2.31.0
+
+# Environment variable management
+python-dotenv>=1.0.0
+
+# Core dependencies
+azure-core>=1.29.0
+typing-extensions>=4.8.0
+
+# Optional: For better JSON handling and validation
+jsonschema>=4.0.0
+
+# If you need to install from a specific pre-release index, use:
+# --pre --extra-index-url https://pkgs.dev.azure.com/azure-sdk/public/_packaging/azure-sdk-for-python/pypi/simple/

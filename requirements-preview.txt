@@ -1,0 +1,20 @@
+# Alternative requirements.txt for latest MCP preview versions
+# Try this if the main requirements.txt doesn't work
+
+# Install from the Azure SDK preview feed
+--pre
+--extra-index-url https://pkgs.dev.azure.com/azure-sdk/public/_packaging/azure-sdk-for-python/pypi/simple/
+
+# Azure AI Projects and Agents (latest previews with MCP)
+azure-ai-projects>=1.0.0b1
+azure-ai-agents>=1.0.0b1
+
+# Core Azure dependencies
+azure-identity>=1.15.0
+azure-core>=1.29.0
+
+# Other dependencies
+requests>=2.31.0
+python-dotenv>=1.0.0
+typing-extensions>=4.8.0
+jsonschema>=4.0.0
