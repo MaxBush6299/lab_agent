@@ -80,7 +80,13 @@ def get_mcp_access_token() -> str:
         credential = DefaultAzureCredential(exclude_broker_credential=True)
         
         # Request token with the MCP server's scope
-        token_result = credential.get_token(MCP_AUTH_SCOPE)
+        # For DefaultAzureCredential, use the base resource URL with /.default
+        # The MCP_AUTH_SCOPE is "api://GUID/user_impersonation", so extract the base
+        base_resource = MCP_AUTH_SCOPE.rsplit('/', 1)[0]  # Gets "api://GUID"
+        token_scope = f"{base_resource}/.default"  # Makes "api://GUID/.default"
+        
+        pretty(f"[MCP Auth] Requesting token for scope: {token_scope}")
+        token_result = credential.get_token(token_scope)
         
         # Cache the token
         _mcp_token_cache["token"] = token_result.token
@@ -634,6 +640,7 @@ def main():
     )
 
     # Enable/disable MCP for testing
+    # Anonymous tool discovery IS working - testing if Azure AI Foundry can connect
     USE_MCP = True  # Set to True to enable MCP tools
     
     mcp_tool = None
